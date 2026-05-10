@@ -2,7 +2,9 @@ import kommo from "./kommo.mjs";
 import openai from "./openai.mjs";
 
 const CHATBOT_TAG = () => process.env.CHATBOT_TAG || "Chatbot";
-const FIELD_RESPUESTA_IA = 1114435;
+
+// Control de mensajes ya procesados para evitar duplicados
+const processedMessages = new Set();
 
 export async function handleWebhook(payload) {
   const messageData = payload.message?.add?.[0];
@@ -10,11 +12,21 @@ export async function handleWebhook(payload) {
 
   if (messageData.type !== "incoming") return { status: "not_incoming" };
 
+  // Evitar duplicados
+  const msgId = messageData.id;
+  if (processedMessages.has(msgId)) {
+    console.log(`[Webhook] Mensaje ${msgId} ya procesado, ignorando`);
+    return { status: "duplicate" };
+  }
+  processedMessages.add(msgId);
+  setTimeout(() => processedMessages.delete(msgId), 5 * 60 * 1000);
+
   const leadId = Number(messageData.entity_id || messageData.element_id);
   const messageText = messageData.text;
+  const chatId = messageData.chat_id;
 
-  if (!leadId || !messageText) {
-    console.log("[Webhook] Faltan datos:", { leadId, messageText });
+  if (!leadId || !messageText || !chatId) {
+    console.log("[Webhook] Faltan datos:", { leadId, messageText: !!messageText, chatId: !!chatId });
     return { status: "missing_data" };
   }
 
@@ -32,11 +44,18 @@ export async function handleWebhook(payload) {
   const history = [{ role: "user", content: messageText }];
   const { message: reply, actions } = await openai.getResponse(history, leadContext);
 
-  // Guardar la respuesta en el campo "Respuesta IA" del lead
-  await kommo.updateLeadCustomFields(leadId, [
-    { id: FIELD_RESPUESTA_IA, value: reply },
-  ]);
-  console.log(`[Webhook] Respuesta guardada en campo "Respuesta IA" del lead ${leadId}`);
+  // Enviar respuesta por el chat real (amojo)
+  if (reply) {
+    await kommo.sendChatMessage(chatId, reply, {
+      entityId: messageData.entity_id,
+      elementType: messageData.element_type,
+      authorId: messageData.author?.id,
+      talkId: messageData.talk_id,
+      contactId: messageData.contact_id,
+      accountId: payload.account?.id,
+    });
+    console.log(`[Webhook] Respuesta enviada por chat a lead ${leadId}`);
+  }
 
   for (const action of actions) {
     await executeAction(leadId, action);
@@ -57,7 +76,6 @@ function buildLeadContext(lead) {
 
   if (lead.custom_fields_values) {
     for (const field of lead.custom_fields_values) {
-      if (field.field_id === FIELD_RESPUESTA_IA) continue;
       const val = field.values?.[0]?.value;
       if (val) parts.push(`${field.field_name}: ${val}`);
     }

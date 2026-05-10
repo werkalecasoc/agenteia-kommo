@@ -15,8 +15,6 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "agenteia-kommo" });
 });
 
-// Webhook de Kommo: recibe mensaje, procesa con OpenAI,
-// guarda respuesta en campo "Respuesta IA" del lead
 app.post("/webhook/kommo", async (req, res) => {
   console.log("[Webhook] Recibido:", JSON.stringify(req.body).substring(0, 300));
   res.status(200).json({ ok: true });

@@ -24,6 +24,78 @@ async function request(method, path, body = null) {
   return res.json();
 }
 
+// --- Chat Session (amojo) ---
+
+let chatSession = null;
+
+async function getChatSession() {
+  if (chatSession) return chatSession;
+
+  const url = `https://${process.env.KOMMO_SUBDOMAIN}.kommo.com/ajax/v1/chats/session`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "X-Requested-With": "XMLHttpRequest",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "request[chats][session][action]=create",
+  });
+
+  if (!res.ok) throw new Error(`Chat session failed: ${await res.text()}`);
+
+  const data = await res.json();
+  chatSession = data.response.chats.session;
+  console.log("[Kommo] Chat session creada");
+
+  // Renovar sesión cada 10 minutos
+  setTimeout(() => { chatSession = null; }, 10 * 60 * 1000);
+
+  return chatSession;
+}
+
+async function sendChatMessage(chatId, text, metadata) {
+  const session = await getChatSession();
+  const accountId = session.account.id;
+  const url = `https://amojo.kommo.com/v1/chats/${accountId}/${chatId}/messages`;
+
+  const body = new URLSearchParams({
+    silent: "false",
+    priority: "low",
+    text,
+    "crm_entity[id]": String(metadata.entityId || ""),
+    "crm_entity[type]": String(metadata.elementType || ""),
+    persona_name: session.user?.name || "Agente IA",
+    persona_avatar: session.user?.avatar || "",
+    recipient_id: metadata.authorId || "",
+    crm_dialog_id: String(metadata.talkId || ""),
+    crm_contact_id: String(metadata.contactId || ""),
+    crm_account_id: String(metadata.accountId || ""),
+    skip_link_shortener: "false",
+  });
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Auth-Token": session.access_token,
+      chatId,
+    },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error("[Kommo] Error enviando mensaje chat:", errText);
+    throw new Error(`Send chat message failed: ${errText}`);
+  }
+
+  return res.json();
+}
+
+// --- CRM API ---
+
 async function getLead(leadId) {
   return request("GET", `/leads/${leadId}?with=contacts`);
 }
@@ -62,25 +134,6 @@ async function getPipelines() {
   return request("GET", "/leads/pipelines");
 }
 
-async function sendNote(leadId, text) {
-  return request("POST", `/leads/${leadId}/notes`, [
-    {
-      note_type: "common",
-      params: { text },
-    },
-  ]);
-}
-
-async function getNotes(leadId, limit = 20) {
-  const data = await request("GET", `/leads/${leadId}/notes?limit=${limit}&order=desc`);
-  return data?._embedded?.notes || [];
-}
-
-async function getEvents(leadId, limit = 20) {
-  const data = await request("GET", `/events?filter[entity]=lead&filter[entity_id]=${leadId}&limit=${limit}`);
-  return data?._embedded?.events || [];
-}
-
 export default {
   init,
   getLead,
@@ -90,7 +143,6 @@ export default {
   updateLeadCustomFields,
   getContact,
   getPipelines,
-  sendNote,
-  getNotes,
-  getEvents,
+  sendChatMessage,
+  getChatSession,
 };
