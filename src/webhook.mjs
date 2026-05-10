@@ -3,40 +3,70 @@ import openai from "./openai.mjs";
 
 const CHATBOT_TAG = () => process.env.CHATBOT_TAG || "Chatbot";
 
-export async function handleSalesbotRequest(payload) {
-  const leadId = extractLeadId(payload);
+// Almacén temporal de respuestas pendientes: leadId -> respuesta
+const pendingResponses = new Map();
 
-  if (!leadId) {
-    console.log("[Salesbot] No se encontró lead_id en el payload");
-    return { text: "" };
+// Llamado por el webhook de Kommo cuando llega un mensaje
+export async function handleWebhook(payload) {
+  const messageData = payload.message?.add?.[0];
+  if (!messageData) return { status: "no_message" };
+
+  if (messageData.type !== "incoming") return { status: "not_incoming" };
+
+  const leadId = Number(messageData.entity_id || messageData.element_id);
+  const messageText = messageData.text;
+
+  if (!leadId || !messageText) {
+    console.log("[Webhook] Faltan datos:", { leadId, messageText });
+    return { status: "missing_data" };
   }
 
   const hasChatbotTag = await kommo.hasTag(leadId, CHATBOT_TAG());
   if (!hasChatbotTag) {
-    console.log(`[Salesbot] Lead ${leadId} no tiene tag "${CHATBOT_TAG()}", ignorando`);
-    return { text: "" };
+    console.log(`[Webhook] Lead ${leadId} no tiene tag "${CHATBOT_TAG()}"`);
+    return { status: "no_tag" };
   }
 
-  const lastMessage = await getLastIncomingMessage(leadId);
-  if (!lastMessage) {
-    console.log(`[Salesbot] No se encontró mensaje entrante en lead ${leadId}`);
-    return { text: "" };
-  }
-
-  console.log(`[Salesbot] Procesando lead ${leadId}: "${lastMessage.substring(0, 80)}"`);
+  console.log(`[Webhook] Procesando lead ${leadId}: "${messageText.substring(0, 80)}"`);
 
   const lead = await kommo.getLead(leadId);
   const leadContext = buildLeadContext(lead);
-  const history = await buildConversationHistory(leadId, lastMessage);
 
+  const history = [{ role: "user", content: messageText }];
   const { message: reply, actions } = await openai.getResponse(history, leadContext);
 
   for (const action of actions) {
     await executeAction(leadId, action);
   }
 
-  console.log(`[Salesbot] Respuesta: ${reply?.substring(0, 100)}`);
-  return { text: reply || "No pude procesar tu consulta. ¿Podés repetirla?" };
+  // Guardar la respuesta para que el Salesbot la recoja
+  pendingResponses.set(leadId, reply);
+  console.log(`[Webhook] Respuesta lista para lead ${leadId}: "${reply?.substring(0, 80)}"`);
+
+  // Limpiar respuestas viejas (más de 5 minutos)
+  setTimeout(() => pendingResponses.delete(leadId), 5 * 60 * 1000);
+
+  return { status: "processed", leadId };
+}
+
+// Llamado por el Salesbot para obtener la respuesta generada
+export async function handleSalesbotRequest(payload) {
+  const leadId = extractLeadId(payload);
+
+  if (!leadId) {
+    console.log("[Salesbot] No se encontró lead_id");
+    return { text: "" };
+  }
+
+  const reply = pendingResponses.get(leadId);
+  if (reply) {
+    pendingResponses.delete(leadId);
+    console.log(`[Salesbot] Entregando respuesta para lead ${leadId}`);
+    return { text: reply };
+  }
+
+  console.log(`[Salesbot] No hay respuesta pendiente para lead ${leadId}`);
+  return { text: "" };
 }
 
 function extractLeadId(payload) {
@@ -44,31 +74,7 @@ function extractLeadId(payload) {
   if (payload.leads?.status?.[0]?.id) return Number(payload.leads.status[0].id);
   if (payload.leads?.update?.[0]?.id) return Number(payload.leads.update[0].id);
   if (payload.lead_id) return Number(payload.lead_id);
-  if (payload.message?.add?.[0]?.entity_id) return Number(payload.message.add[0].entity_id);
   return null;
-}
-
-async function getLastIncomingMessage(leadId) {
-  const notes = await kommo.getNotes(leadId, 5);
-
-  const incoming = notes
-    .filter((n) => {
-      const isChat = n.note_type === "incoming_chat_message" || n.note_type === 102;
-      const isSms = n.note_type === "sms_in" || n.note_type === 3;
-      const isIncoming = n.note_type === 10;
-      return isChat || isSms || isIncoming;
-    })
-    .sort((a, b) => b.created_at - a.created_at);
-
-  if (incoming.length > 0) {
-    return incoming[0].params?.text || incoming[0].params?.message || null;
-  }
-
-  const allNotes = notes
-    .filter((n) => n.params?.text || n.params?.message)
-    .sort((a, b) => b.created_at - a.created_at);
-
-  return allNotes[0]?.params?.text || allNotes[0]?.params?.message || null;
 }
 
 function buildLeadContext(lead) {
@@ -92,37 +98,6 @@ function buildLeadContext(lead) {
   if (contact) parts.push(`Contacto ID: ${contact.id}`);
 
   return parts.join("\n");
-}
-
-async function buildConversationHistory(leadId, currentMessage) {
-  const notes = await kommo.getNotes(leadId, 10);
-
-  const history = [];
-
-  const sorted = notes
-    .filter((n) => n.params?.text || n.params?.message)
-    .sort((a, b) => a.created_at - b.created_at);
-
-  for (const note of sorted) {
-    const text = note.params?.text || note.params?.message || "";
-    if (!text) continue;
-
-    const isOutgoing = note.note_type === "outgoing_chat_message" ||
-      note.note_type === 103 ||
-      note.note_type === 11 ||
-      text.startsWith("🤖");
-
-    history.push({
-      role: isOutgoing ? "assistant" : "user",
-      content: text.replace(/^🤖\s*Bot:\s*/, ""),
-    });
-  }
-
-  if (!history.length || history[history.length - 1].content !== currentMessage) {
-    history.push({ role: "user", content: currentMessage });
-  }
-
-  return history;
 }
 
 async function executeAction(leadId, action) {
