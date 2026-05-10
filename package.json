@@ -1,0 +1,16 @@
+{
+  "name": "agenteia-kommo",
+  "version": "1.0.0",
+  "description": "Agente de IA para Kommo CRM - responde mensajes automáticamente",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "openai": "^4.78.0"
+  }
+}
