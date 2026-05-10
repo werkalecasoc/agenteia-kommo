@@ -4,11 +4,10 @@ import openai from "./openai.mjs";
 const CHATBOT_TAG = () => process.env.CHATBOT_TAG || "Chatbot";
 
 export async function handleSalesbotRequest(payload) {
-  const leadId = payload.lead_id || payload.leads_id;
-  const messageText = payload.message || payload.text;
+  const leadId = extractLeadId(payload);
 
-  if (!leadId || !messageText) {
-    console.log("[Salesbot] Faltan datos: lead_id o message");
+  if (!leadId) {
+    console.log("[Salesbot] No se encontró lead_id en el payload");
     return { text: "" };
   }
 
@@ -18,11 +17,17 @@ export async function handleSalesbotRequest(payload) {
     return { text: "" };
   }
 
-  console.log(`[Salesbot] Procesando lead ${leadId}: "${messageText.substring(0, 80)}"`);
+  const lastMessage = await getLastIncomingMessage(leadId);
+  if (!lastMessage) {
+    console.log(`[Salesbot] No se encontró mensaje entrante en lead ${leadId}`);
+    return { text: "" };
+  }
+
+  console.log(`[Salesbot] Procesando lead ${leadId}: "${lastMessage.substring(0, 80)}"`);
 
   const lead = await kommo.getLead(leadId);
   const leadContext = buildLeadContext(lead);
-  const history = await buildConversationHistory(leadId, messageText);
+  const history = await buildConversationHistory(leadId, lastMessage);
 
   const { message: reply, actions } = await openai.getResponse(history, leadContext);
 
@@ -30,7 +35,40 @@ export async function handleSalesbotRequest(payload) {
     await executeAction(leadId, action);
   }
 
-  return { text: reply || "" };
+  console.log(`[Salesbot] Respuesta: ${reply?.substring(0, 100)}`);
+  return { text: reply || "No pude procesar tu consulta. ¿Podés repetirla?" };
+}
+
+function extractLeadId(payload) {
+  if (payload.leads?.add?.[0]?.id) return Number(payload.leads.add[0].id);
+  if (payload.leads?.status?.[0]?.id) return Number(payload.leads.status[0].id);
+  if (payload.leads?.update?.[0]?.id) return Number(payload.leads.update[0].id);
+  if (payload.lead_id) return Number(payload.lead_id);
+  if (payload.message?.add?.[0]?.entity_id) return Number(payload.message.add[0].entity_id);
+  return null;
+}
+
+async function getLastIncomingMessage(leadId) {
+  const notes = await kommo.getNotes(leadId, 5);
+
+  const incoming = notes
+    .filter((n) => {
+      const isChat = n.note_type === "incoming_chat_message" || n.note_type === 102;
+      const isSms = n.note_type === "sms_in" || n.note_type === 3;
+      const isIncoming = n.note_type === 10;
+      return isChat || isSms || isIncoming;
+    })
+    .sort((a, b) => b.created_at - a.created_at);
+
+  if (incoming.length > 0) {
+    return incoming[0].params?.text || incoming[0].params?.message || null;
+  }
+
+  const allNotes = notes
+    .filter((n) => n.params?.text || n.params?.message)
+    .sort((a, b) => b.created_at - a.created_at);
+
+  return allNotes[0]?.params?.text || allNotes[0]?.params?.message || null;
 }
 
 function buildLeadContext(lead) {
@@ -62,21 +100,27 @@ async function buildConversationHistory(leadId, currentMessage) {
   const history = [];
 
   const sorted = notes
-    .filter((n) => [4, 10, 25].includes(n.note_type) || typeof n.note_type === "string")
+    .filter((n) => n.params?.text || n.params?.message)
     .sort((a, b) => a.created_at - b.created_at);
 
   for (const note of sorted) {
     const text = note.params?.text || note.params?.message || "";
     if (!text) continue;
 
-    const isBot = text.startsWith("🤖 Bot:");
+    const isOutgoing = note.note_type === "outgoing_chat_message" ||
+      note.note_type === 103 ||
+      note.note_type === 11 ||
+      text.startsWith("🤖");
+
     history.push({
-      role: isBot ? "assistant" : "user",
-      content: isBot ? text.replace("🤖 Bot: ", "") : text,
+      role: isOutgoing ? "assistant" : "user",
+      content: text.replace(/^🤖\s*Bot:\s*/, ""),
     });
   }
 
-  history.push({ role: "user", content: currentMessage });
+  if (!history.length || history[history.length - 1].content !== currentMessage) {
+    history.push({ role: "user", content: currentMessage });
+  }
 
   return history;
 }
