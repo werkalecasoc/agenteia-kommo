@@ -3,27 +3,22 @@ import openai from "./openai.mjs";
 
 const CHATBOT_TAG = () => process.env.CHATBOT_TAG || "Chatbot";
 
-export async function handleIncomingMessage(payload) {
-  const leadId = extractLeadId(payload);
+export async function handleSalesbotRequest(payload) {
+  const leadId = payload.lead_id || payload.leads_id;
+  const messageText = payload.message || payload.text;
 
-  if (!leadId) {
-    console.log("[Webhook] No se encontró lead_id en el payload");
-    return { status: "ignored" };
+  if (!leadId || !messageText) {
+    console.log("[Salesbot] Faltan datos: lead_id o message");
+    return { text: "" };
   }
 
   const hasChatbotTag = await kommo.hasTag(leadId, CHATBOT_TAG());
   if (!hasChatbotTag) {
-    console.log(`[Webhook] Lead ${leadId} no tiene tag "${CHATBOT_TAG()}", ignorando`);
-    return { status: "no_tag" };
+    console.log(`[Salesbot] Lead ${leadId} no tiene tag "${CHATBOT_TAG()}", ignorando`);
+    return { text: "" };
   }
 
-  const messageText = extractMessageText(payload);
-  if (!messageText) {
-    console.log("[Webhook] No hay texto de mensaje para procesar");
-    return { status: "no_text" };
-  }
-
-  console.log(`[Webhook] Procesando mensaje de lead ${leadId}: "${messageText.substring(0, 80)}"`);
+  console.log(`[Salesbot] Procesando lead ${leadId}: "${messageText.substring(0, 80)}"`);
 
   const lead = await kommo.getLead(leadId);
   const leadContext = buildLeadContext(lead);
@@ -31,41 +26,11 @@ export async function handleIncomingMessage(payload) {
 
   const { message: reply, actions } = await openai.getResponse(history, leadContext);
 
-  if (reply) {
-    await kommo.sendNote(leadId, `🤖 Bot: ${reply}`);
-    console.log(`[Webhook] Respuesta guardada en lead ${leadId}`);
-  }
-
   for (const action of actions) {
     await executeAction(leadId, action);
   }
 
-  return { status: "processed", reply, actions };
-}
-
-function extractLeadId(payload) {
-  if (payload.leads?.status?.[0]?.id) return Number(payload.leads.status[0].id);
-  if (payload.leads?.add?.[0]?.id) return Number(payload.leads.add[0].id);
-  if (payload.leads?.update?.[0]?.id) return Number(payload.leads.update[0].id);
-
-  if (payload.message?.add?.[0]?.element_id) return Number(payload.message.add[0].element_id);
-  if (payload.message?.lead_id) return Number(payload.message.lead_id);
-  if (payload.lead_id) return Number(payload.lead_id);
-
-  if (payload.unsorted?.add?.[0]?.lead_id) return Number(payload.unsorted.add[0].lead_id);
-
-  return null;
-}
-
-function extractMessageText(payload) {
-  if (payload.message?.add?.[0]?.text) return payload.message.add[0].text;
-  if (payload.message?.text) return payload.message.text;
-  if (payload.unsorted?.add?.[0]?.message?.text) return payload.unsorted.add[0].message.text;
-
-  if (payload.leads?.add?.[0]?.name) return `Nuevo lead: ${payload.leads.add[0].name}`;
-  if (payload.leads?.status?.[0]) return null;
-
-  return null;
+  return { text: reply || "" };
 }
 
 function buildLeadContext(lead) {

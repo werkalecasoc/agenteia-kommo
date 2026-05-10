@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import kommo from "./src/kommo.mjs";
 import openai from "./src/openai.mjs";
-import { handleIncomingMessage } from "./src/webhook.mjs";
+import { handleSalesbotRequest } from "./src/webhook.mjs";
 
 const app = express();
 app.use(express.json());
@@ -15,14 +15,16 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "agenteia-kommo" });
 });
 
-app.post("/webhook/kommo", async (req, res) => {
-  console.log("[Webhook] Recibido:", JSON.stringify(req.body).substring(0, 500));
-  res.status(200).json({ ok: true });
+app.post("/salesbot", async (req, res) => {
+  console.log("[Salesbot] Recibido:", JSON.stringify(req.body).substring(0, 500));
 
   try {
-    await handleIncomingMessage(req.body);
+    const result = await handleSalesbotRequest(req.body);
+    console.log("[Salesbot] Respuesta:", result.text?.substring(0, 100));
+    res.json(result);
   } catch (err) {
-    console.error("[Webhook] Error procesando mensaje:", err);
+    console.error("[Salesbot] Error:", err);
+    res.json({ text: "Disculpá, hubo un error. ¿Podés repetir tu consulta?" });
   }
 });
 
