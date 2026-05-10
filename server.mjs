@@ -15,17 +15,30 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "agenteia-kommo" });
 });
 
-app.post("/salesbot", async (req, res) => {
-  console.log("[Salesbot] Recibido:", JSON.stringify(req.body).substring(0, 500));
+app.all("/salesbot", async (req, res) => {
+  const params = { ...req.query, ...req.body };
+  console.log("[Salesbot] Recibido:", JSON.stringify(params).substring(0, 500));
 
   try {
-    const result = await handleSalesbotRequest(req.body);
+    const result = await handleSalesbotRequest(params);
     console.log("[Salesbot] Respuesta:", result.text?.substring(0, 100));
     res.json(result);
   } catch (err) {
     console.error("[Salesbot] Error:", err);
     res.json({ text: "Disculpá, hubo un error. ¿Podés repetir tu consulta?" });
   }
+});
+
+// Endpoint de debug para ver qué manda el Salesbot
+app.all("/debug", async (req, res) => {
+  const data = {
+    method: req.method,
+    query: req.query,
+    body: req.body,
+    headers: req.headers,
+  };
+  console.log("[Debug]", JSON.stringify(data, null, 2));
+  res.json(data);
 });
 
 const PORT = process.env.PORT || 3000;
